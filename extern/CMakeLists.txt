@@ -34,4 +34,11 @@ FetchContent_Declare(
         GIT_TAG master
 )
 
-FetchContent_MakeAvailable(daw_header_libraries daw_json_link curl_wrapper daw_utf_range)
+FetchContent_Declare(
+        daw_parallel
+        GIT_REPOSITORY https://github.com/beached/parallel.git
+        GIT_TAG main
+)
+
+
+FetchContent_MakeAvailable(daw_header_libraries daw_json_link curl_wrapper daw_utf_range daw_parallel )

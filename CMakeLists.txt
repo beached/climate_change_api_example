@@ -5,6 +5,9 @@ set(CMAKE_CXX_STANDARD 17)
 
 add_subdirectory(extern)
 
+set(Boost_NO_WARN_NEW_VERSIONS ON)
+find_package(Boost REQUIRED COMPONENTS system thread )
+
 find_path(CROW_INCLUDE_DIRS "crow.h")
 find_package(PkgConfig REQUIRED)
 
@@ -25,6 +28,8 @@ target_link_libraries(
         daw::daw-header-libraries
         daw::daw-curl-wrapper
         daw::daw-utf-range
+        daw::parallel
+        Boost::boost
         ${CROW_LIBRARIES}
         ${GUMBO_LIBRARIES}
 )

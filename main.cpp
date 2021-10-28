@@ -4,19 +4,77 @@
 #include <daw/daw_move.h>
 #include <daw/daw_parser_helper_sv.h>
 #include <daw/daw_string_view.h>
-#include <daw/daw_visit.h>
 #include <daw/json/daw_json_link.h>
+#include <daw/parallel/daw_latch.h>
 #include <daw/utf8.h>
 
 #define CROW_MAIN
 
+#include <atomic>
 #include <chrono>
 #include <crow.h>
 #include <future>
 #include <gumbo.h>
-#include <iostream>
 #include <mutex>
 #include <tuple>
+#include <unordered_map>
+#include <vector>
+
+struct Newspaper {
+	std::string name;
+	std::string address;
+	std::string base;
+};
+
+static const Newspaper newspapers[] = {
+  { "cityam",
+    "https://www.cityam.com/"
+    "london-must-become-a-world-leader-on-climate-change-action/",
+    "" },
+  { "thetimes", "https://www.thetimes.co.uk/environment/climate-change", "" },
+  {
+    "guardian",
+    "https://www.theguardian.com/environment/climate-crisis",
+    "",
+  },
+  {
+    "telegraph",
+    "https://www.telegraph.co.uk/climate-change",
+    "https://www.telegraph.co.uk",
+  },
+  {
+    "nyt",
+    "https://www.nytimes.com/international/section/climate",
+    "",
+  },
+  {
+    "latimes",
+    "https://www.latimes.com/environment",
+    "",
+  },
+  {
+    "smh",
+    "https://www.smh.com.au/environment/climate-change",
+    "https://www.smh.com.au",
+  },
+  {
+    "un",
+    "https://www.un.org/climatechange",
+    "",
+  },
+  {
+    "bbc",
+    "https://www.bbc.co.uk/news/science_and_environment",
+    "https://www.bbc.co.uk",
+  },
+  { "es",
+    "https://www.standard.co.uk/topic/climate-change",
+    "https://www.standard.co.uk" },
+  { "sun", "https://www.thesun.co.uk/topic/climate-change-environment/", "" },
+  { "dm",
+    "https://www.dailymail.co.uk/news/climate_change_global_warming/index.html",
+    "" },
+  { "nyp", "https://nypost.com/tag/climate-change/", "" } };
 
 struct GumboDeleter {
 	constexpr GumboDeleter( ) = default;
@@ -29,14 +87,16 @@ struct GumboDeleter {
 	}
 };
 
-struct GumboHandle : std::shared_ptr<GumboOutput> {
+struct GumboHandle : std::unique_ptr<GumboOutput, GumboDeleter> {
+	using base = std::unique_ptr<GumboOutput, GumboDeleter>;
 	inline GumboHandle( GumboOutput *ptr )
-	  : std::shared_ptr<GumboOutput>( ptr, GumboDeleter{ } ) {}
+	  : base( ptr ) {}
 };
 
 struct Url {
 	std::string uri;
 	std::string title;
+	std::string source;
 };
 
 template<typename T, typename Retriever>
@@ -46,39 +106,62 @@ struct CachedValue : private Retriever {
 	using retriever_t = Retriever;
 
 private:
-	std::chrono::seconds m_ttl;
-	std::optional<type> m_value{ };
-	std::optional<std::chrono::time_point<std::chrono::system_clock>>
-	  m_time_of_retrieval{ };
-	std::mutex m_mut{ };
+	struct state_t {
+		std::chrono::seconds m_ttl;
+		std::optional<type> m_value{ };
+		std::optional<std::chrono::time_point<std::chrono::system_clock>>
+		  m_time_of_retrieval{ };
+		std::mutex m_mut = std::mutex{ };
+		std::atomic_bool m_working = false;
+		daw::latch m_latch = daw::latch( 0 );
+
+		inline state_t( std::chrono::seconds ttl )
+		  : m_ttl( ttl ) {}
+	};
+	std::unique_ptr<state_t> m_state;
 
 public:
 	CachedValue( retriever_t const &retriever )
 	  : Retriever( retriever )
-	  , m_ttl( std::chrono::seconds( 3600 ) ) {}
+	  , m_state( std::make_unique<state_t>( std::chrono::seconds( 3600 ) ) ) {}
 
 	CachedValue( retriever_t const &retriever, std::chrono::seconds ttl )
 	  : retriever_t( retriever )
-	  , m_ttl( ttl ) {}
+	  , m_state( std::make_unique<state_t>( ttl ) ) {}
 
 	void clear( ) {
-		auto const lck = std::unique_lock( m_mut );
-		m_value.reset( );
-		m_time_of_retrieval.reset( );
+		auto const lck = std::unique_lock( m_state->m_mut );
+		m_state->m_value.reset( );
+		m_state->m_time_of_retrieval.reset( );
 	}
 
 	std::future<type> get( ) {
-		auto const lck = std::unique_lock( m_mut );
-		if( m_time_of_retrieval and
-		    std::chrono::system_clock::now( ) < ( *m_time_of_retrieval + m_ttl ) ) {
-			return std::async( std::launch::deferred,
-			                   [value = *m_value] { return value; } );
+		auto const lck = std::unique_lock( m_state->m_mut );
+		if( m_state->m_time_of_retrieval ) {
+			if( m_state->m_working.load( ) or
+			    std::chrono::system_clock::now( ) <
+			      ( *m_state->m_time_of_retrieval + m_state->m_ttl ) ) {
+				return std::async( std::launch::deferred,
+				                   [value = *m_state->m_value] { return value; } );
+			}
 		}
+		if( m_state->m_working.load( ) ) {
+			return std::async( std::launch::async, [&] {
+				m_state->m_latch.wait( );
+				auto const local_lck = std::unique_lock( m_state->m_mut );
+				auto result = *m_state->m_value;
+				return result;
+			} );
+		}
+		m_state->m_latch.add_notifier( );
 		return std::async( std::launch::async, [&] {
 			type new_value = ( *this )( );
-			auto const lck = std::unique_lock( m_mut );
-			m_value = new_value;
-			m_time_of_retrieval = std::chrono::system_clock::now( );
+			{
+				auto const local_lck = std::unique_lock( m_state->m_mut );
+				m_state->m_value = new_value;
+				m_state->m_time_of_retrieval = std::chrono::system_clock::now( );
+			}
+			m_state->m_latch.notify( );
 			return new_value;
 		} );
 	}
@@ -95,10 +178,13 @@ namespace daw::json {
 	struct json_data_contract<Url> {
 		static constexpr char const uri[] = "uri";
 		static constexpr char const title[] = "title";
-		using type = json_member_list<json_string<uri>, json_string<title>>;
+		static constexpr char const source[] = "source";
+		using type = json_member_list<json_string<uri>,
+		                              json_string<title>,
+		                              json_string<source>>;
 
 		static inline auto to_json_data( Url const &u ) {
-			return std::forward_as_tuple( u.uri, u.title );
+			return std::forward_as_tuple( u.uri, u.title, u.source );
 		}
 	};
 } // namespace daw::json
@@ -199,38 +285,80 @@ static std::vector<Url> search_for_links( GumboNode *node, Callback onEach ) {
 			                   uri.find( "climate" ) == daw::string_view::npos ) ) {
 				  return;
 			  }
-			  (void)onEach( Url{ uri, title } );
+			  (void)onEach( uri, title );
 		  }
 	  } );
 	return result;
 }
 
-int main( ) {
-	auto app = crow::SimpleApp{ };
-	CROW_ROUTE( app, "/news" )
-	  .methods( crow::HTTPMethod::GET )(
-	    []( crow::request const &req, crow::response &resp ) {
-		    std::cout << "Request for " << req.url
-		              << " from: " << req.remoteIpAddress << '\n';
-		    static auto html_cache = CachedValue( [] {
-			    auto curl = daw::curl_wrapper( );
-			    auto const html = curl.get_string(
-			      "https://www.theguardian.com/environment/climate-crisis" );
-			    GumboHandle output = gumbo_parse_with_options( &kGumboDefaultOptions,
-			                                                   html.c_str( ),
-			                                                   html.size( ) );
-			    std::vector<Url> result{ };
-			    result.reserve( 128 );
-			    search_for_links( output->root, [&]( Url &&url ) {
-				    result.push_back( DAW_MOVE( url ) );
-			    } );
-			    return result;
-		    } );
-		    auto urls_fut = html_cache.get( );
-		    resp.add_header( "Content-Type", "application/json" );
-		    resp.body = daw::json::to_json( urls_fut.get( ) );
-		    resp.end( );
-	    } );
+struct HtmlCache {
+	using func_t = std::function<std::vector<Url>( )>;
+	using cache_t = CachedValue<std::vector<Url>, func_t>;
+	std::unordered_map<std::string, cache_t> operator( )( ) const {
+		auto result = std::unordered_map<std::string, cache_t>{ };
+		result.reserve( std::size( newspapers ) );
+		for( Newspaper const &n : newspapers ) {
+			result.emplace(
+			  n.name,
+			  cache_t{ func_t{ [n]( ) {
+				  auto curl = daw::curl_wrapper( );
+				  auto const html = curl.get_string( n.address );
+				  GumboHandle output = gumbo_parse_with_options( &kGumboDefaultOptions,
+				                                                 html.c_str( ),
+				                                                 html.size( ) );
+				  std::vector<Url> r{ };
+				  r.reserve( 128 );
+				  search_for_links(
+				    output->root,
+				    [&]( std::string uri, std::string title ) {
+					    uri = n.base + uri;
+					    r.push_back( Url{ DAW_MOVE( uri ), DAW_MOVE( title ), n.name } );
+				    } );
+				  std::sort( r.begin( ),
+				             r.end( ),
+				             []( auto const &lhs, auto const &rhs ) {
+					             return lhs.uri < rhs.uri;
+				             } );
+				  r.erase( std::unique( r.begin( ),
+				                        r.end( ),
+				                        []( auto const &lhs, auto const &rhs ) {
+					                        return lhs.uri == rhs.uri;
+				                        } ),
+				           r.end( ) );
+				  return r;
+			  } } } );
+		}
+		return result;
+	}
+};
 
+int main( ) {
+	static auto html_cache = HtmlCache{ }( );
+	auto app = crow::SimpleApp{ };
+	CROW_ROUTE( app, "/news/" ).methods( crow::HTTPMethod::GET )( []( ) {
+		std::vector<std::future<std::vector<Url>>> urls_fut{ };
+		for( auto &c : html_cache ) {
+			urls_fut.push_back( c.second.get( ) );
+		}
+		std::vector<Url> all_urls{ };
+		for( auto &f : urls_fut ) {
+			auto u = f.get( );
+			all_urls.insert( all_urls.end( ), u.begin( ), u.end( ) );
+		}
+		auto resp = crow::response( daw::json::to_json( all_urls ) );
+		resp.add_header( "Content-Type", "application/json" );
+		return resp;
+	} );
+	CROW_ROUTE( app, "/news/<string>" )
+	  .methods( crow::HTTPMethod::GET )( []( std::string which_source ) {
+		  auto it = html_cache.find( which_source );
+		  if( it == html_cache.end( ) ) {
+			  return crow::response( 404U, "Unable to find data" );
+		  }
+		  auto resp =
+		    crow::response( daw::json::to_json( it->second.get( ).get( ) ) );
+		  resp.add_header( "Content-Type", "application/json" );
+		  return resp;
+	  } );
 	app.port( 8080 ).multithreaded( ).run( );
 }
