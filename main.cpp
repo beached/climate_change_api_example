@@ -40,22 +40,26 @@ struct Url {
 };
 
 template<typename T, typename Retriever>
-class CachedValue : private Retriever {
+struct CachedValue : private Retriever {
 	static_assert( std::is_invocable_r_v<T, Retriever> );
+	using type = T;
+	using retriever_t = Retriever;
+
+private:
 	std::chrono::seconds m_ttl;
-	std::optional<T> m_value{ };
+	std::optional<type> m_value{ };
 	std::optional<std::chrono::time_point<std::chrono::system_clock>>
 	  m_time_of_retrieval{ };
 	std::mutex m_mut{ };
 
 public:
-	CachedValue( Retriever const &r )
-	  : Retriever( r )
+	CachedValue( retriever_t const &retriever )
+	  : Retriever( retriever )
 	  , m_ttl( std::chrono::seconds( 3600 ) ) {}
 
-	CachedValue( Retriever const &r, std::chrono::seconds Ttl )
-	  : Retriever( r )
-	  , m_ttl( Ttl ) {}
+	CachedValue( retriever_t const &retriever, std::chrono::seconds ttl )
+	  : retriever_t( retriever )
+	  , m_ttl( ttl ) {}
 
 	void clear( ) {
 		auto const lck = std::unique_lock( m_mut );
@@ -63,14 +67,15 @@ public:
 		m_time_of_retrieval.reset( );
 	}
 
-	std::variant<T, std::future<T>> get( ) {
+	std::future<type> get( ) {
 		auto const lck = std::unique_lock( m_mut );
 		if( m_time_of_retrieval and
 		    std::chrono::system_clock::now( ) < ( *m_time_of_retrieval + m_ttl ) ) {
-			return *m_value;
+			return std::async( std::launch::deferred,
+			                   [value = *m_value] { return value; } );
 		}
 		return std::async( std::launch::async, [&] {
-			T new_value = ( *this )( );
+			type new_value = ( *this )( );
 			auto const lck = std::unique_lock( m_mut );
 			m_value = new_value;
 			m_time_of_retrieval = std::chrono::system_clock::now( );
@@ -207,7 +212,6 @@ int main( ) {
 	    []( crow::request const &req, crow::response &resp ) {
 		    std::cout << "Request for " << req.url
 		              << " from: " << req.remoteIpAddress << '\n';
-		    auto const start_time = std::chrono::high_resolution_clock::now( );
 		    static auto html_cache = CachedValue( [] {
 			    auto curl = daw::curl_wrapper( );
 			    auto const html = curl.get_string(
@@ -215,37 +219,18 @@ int main( ) {
 			    GumboHandle output = gumbo_parse_with_options( &kGumboDefaultOptions,
 			                                                   html.c_str( ),
 			                                                   html.size( ) );
-			    return output;
+			    std::vector<Url> result{ };
+			    result.reserve( 128 );
+			    search_for_links( output->root, [&]( Url &&url ) {
+				    result.push_back( DAW_MOVE( url ) );
+			    } );
+			    return result;
 		    } );
-		    GumboHandle hnd =
-		      daw::visit_nt( html_cache.get( ), []( auto &&v ) -> GumboHandle {
-			      if constexpr( std::is_same_v<daw::remove_cvref_t<decltype( v )>,
-			                                   GumboHandle> ) {
-				      return v;
-			      } else {
-				      return DAW_FWD( v ).get( );
-			      }
-		      } );
-
+		    auto urls_fut = html_cache.get( );
 		    resp.add_header( "Content-Type", "application/json" );
-		    resp.body.reserve( 4096U );
-		    resp.body += '[';
-		    bool is_first = true;
-		    constexpr char const delim[] = { ',', ' ' };
-		    auto urls = search_for_links( hnd->root, [&]( Url url ) {
-			    resp.body += delim[static_cast<std::size_t>( is_first )];
-			    resp.body += daw::json::to_json( url );
-			    is_first = false;
-		    } );
-		    resp.body += ']';
+		    resp.body = daw::json::to_json( urls_fut.get( ) );
 		    resp.end( );
-		    auto const end_time = std::chrono::high_resolution_clock::now( );
-		    std::cout << "\ntime to process: "
-		              << std::chrono::duration_cast<std::chrono::microseconds>(
-		                   end_time - start_time )
-		                   .count( )
-		              << "us\n";
 	    } );
 
-	app.port( 8080 ).run( ); // .multithreaded( ).run( );
+	app.port( 8080 ).multithreaded( ).run( );
 }
