@@ -1,0 +1,18 @@
+{
+  "$schema": "https://raw.githubusercontent.com/microsoft/vcpkg/master/scripts/vcpkg.schema.json",
+  "name": "climate-change-api-example",
+  "version": "0.1.0",
+  "dependencies": [
+    "boost-asio",
+    "boost-filesystem",
+    "boost-regex",
+    "boost-system",
+    "crow",
+    {
+      "name": "curl",
+      "features": [
+        "ssl"
+      ]
+    }
+  ]
+}
