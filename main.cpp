@@ -1,3 +1,13 @@
+// Copyright (c) Darrell Wright
+//
+// Distributed under the Boost Software License, Version 1.0. (See accompanying
+// file LICENSE or copy at http://www.boost.org/LICENSE_1_0.txt)
+//
+// Official repository: https://github.com/beached/climate_change_api_example
+//
+
+#include "cached_value.h"
+#include "newspaper.h"
 
 #include <daw/curl_wrapper.h>
 #include <daw/daw_logic.h>
@@ -5,76 +15,16 @@
 #include <daw/daw_parser_helper_sv.h>
 #include <daw/daw_string_view.h>
 #include <daw/json/daw_json_link.h>
-#include <daw/parallel/daw_latch.h>
 #include <daw/utf8.h>
 
 #define CROW_MAIN
 
-#include <atomic>
-#include <chrono>
 #include <crow.h>
 #include <future>
 #include <gumbo.h>
-#include <mutex>
 #include <tuple>
 #include <unordered_map>
 #include <vector>
-
-struct Newspaper {
-	std::string name;
-	std::string address;
-	std::string base;
-};
-
-static const Newspaper newspapers[] = {
-  { "cityam",
-    "https://www.cityam.com/"
-    "london-must-become-a-world-leader-on-climate-change-action/",
-    "" },
-  { "thetimes", "https://www.thetimes.co.uk/environment/climate-change", "" },
-  {
-    "guardian",
-    "https://www.theguardian.com/environment/climate-crisis",
-    "",
-  },
-  {
-    "telegraph",
-    "https://www.telegraph.co.uk/climate-change",
-    "https://www.telegraph.co.uk",
-  },
-  {
-    "nyt",
-    "https://www.nytimes.com/international/section/climate",
-    "",
-  },
-  {
-    "latimes",
-    "https://www.latimes.com/environment",
-    "",
-  },
-  {
-    "smh",
-    "https://www.smh.com.au/environment/climate-change",
-    "https://www.smh.com.au",
-  },
-  {
-    "un",
-    "https://www.un.org/climatechange",
-    "",
-  },
-  {
-    "bbc",
-    "https://www.bbc.co.uk/news/science_and_environment",
-    "https://www.bbc.co.uk",
-  },
-  { "es",
-    "https://www.standard.co.uk/topic/climate-change",
-    "https://www.standard.co.uk" },
-  { "sun", "https://www.thesun.co.uk/topic/climate-change-environment/", "" },
-  { "dm",
-    "https://www.dailymail.co.uk/news/climate_change_global_warming/index.html",
-    "" },
-  { "nyp", "https://nypost.com/tag/climate-change/", "" } };
 
 struct GumboDeleter {
 	constexpr GumboDeleter( ) = default;
@@ -98,90 +48,6 @@ struct Url {
 	std::string title;
 	std::string source;
 };
-
-template<typename T, typename Retriever>
-struct CachedValue : private Retriever {
-	static_assert( std::is_invocable_r_v<T, Retriever> );
-	using type = T;
-	using retriever_t = Retriever;
-
-private:
-	struct state_t {
-		std::chrono::seconds m_ttl;
-		std::optional<type> m_value{ };
-		std::optional<std::chrono::time_point<std::chrono::system_clock>>
-		  m_time_of_retrieval{ };
-		std::mutex m_mut = std::mutex{ };
-		std::atomic_bool m_working = false;
-		daw::latch m_latch = daw::latch( 0 );
-
-		inline state_t( std::chrono::seconds ttl )
-		  : m_ttl( ttl ) {}
-	};
-	std::unique_ptr<state_t> m_state;
-
-public:
-	CachedValue( retriever_t const &retriever )
-	  : Retriever( retriever )
-	  , m_state( std::make_unique<state_t>( std::chrono::seconds( 3600 ) ) ) {}
-
-	CachedValue( retriever_t const &retriever, std::chrono::seconds ttl )
-	  : retriever_t( retriever )
-	  , m_state( std::make_unique<state_t>( ttl ) ) {}
-
-	void clear( ) {
-		auto const lck = std::unique_lock( m_state->m_mut );
-		m_state->m_value.reset( );
-		m_state->m_time_of_retrieval.reset( );
-	}
-
-	std::future<type> get( ) {
-		auto const lck = std::unique_lock( m_state->m_mut );
-		(void)lck;
-		if( m_state->m_time_of_retrieval ) {
-			// We have previously retrieved data
-			if( m_state->m_working.load( ) or
-			    std::chrono::system_clock::now( ) <
-			      ( *m_state->m_time_of_retrieval + m_state->m_ttl ) ) {
-				// We are updating existing data or it has not yet expired
-				return std::async( std::launch::deferred,
-				                   [value = *m_state->m_value] { return value; } );
-			}
-		}
-		if( m_state->m_working.load( ) ) {
-			// We have not yet retrieved data and another thread has started the load.
-			// Wait for it and then return the new data
-			return std::async( std::launch::async, [&] {
-				m_state->m_latch.wait( );
-				auto const local_lck = std::unique_lock( m_state->m_mut );
-				(void)local_lck;
-				auto result = *m_state->m_value;
-				return result;
-			} );
-		}
-		// No data has yet been retrieved and no other thread is loading it
-		m_state->m_latch.add_notifier( );
-		m_state->m_working = true;
-		return std::async( std::launch::async, [&] {
-			type new_value = ( *this )( );
-			{
-				auto const local_lck = std::unique_lock( m_state->m_mut );
-				(void)local_lck;
-				m_state->m_value = new_value;
-				m_state->m_time_of_retrieval = std::chrono::system_clock::now( );
-				m_state->m_working = false;
-			}
-			m_state->m_latch.notify( );
-			return new_value;
-		} );
-	}
-};
-template<typename Ret>
-CachedValue( Ret ) -> CachedValue<std::invoke_result_t<Ret>, Ret>;
-
-template<typename Ret>
-CachedValue( Ret, std::chrono::seconds )
-  -> CachedValue<std::invoke_result_t<Ret>, Ret>;
 
 namespace daw::json {
 	template<>
@@ -303,7 +169,7 @@ static std::vector<Url> search_for_links( GumboNode *node, Callback onEach ) {
 
 struct HtmlCache {
 	using func_t = std::function<std::vector<Url>( )>;
-	using cache_t = CachedValue<std::vector<Url>, func_t>;
+	using cache_t = daw::CachedValue<std::vector<Url>, func_t>;
 	std::unordered_map<std::string, cache_t> operator( )( ) const {
 		auto result = std::unordered_map<std::string, cache_t>{ };
 		result.reserve( std::size( newspapers ) );
