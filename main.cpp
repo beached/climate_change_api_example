@@ -137,29 +137,39 @@ public:
 
 	std::future<type> get( ) {
 		auto const lck = std::unique_lock( m_state->m_mut );
+		(void)lck;
 		if( m_state->m_time_of_retrieval ) {
+			// We have previously retrieved data
 			if( m_state->m_working.load( ) or
 			    std::chrono::system_clock::now( ) <
 			      ( *m_state->m_time_of_retrieval + m_state->m_ttl ) ) {
+				// We are updating existing data or it has not yet expired
 				return std::async( std::launch::deferred,
 				                   [value = *m_state->m_value] { return value; } );
 			}
 		}
 		if( m_state->m_working.load( ) ) {
+			// We have not yet retrieved data and another thread has started the load.
+			// Wait for it and then return the new data
 			return std::async( std::launch::async, [&] {
 				m_state->m_latch.wait( );
 				auto const local_lck = std::unique_lock( m_state->m_mut );
+				(void)local_lck;
 				auto result = *m_state->m_value;
 				return result;
 			} );
 		}
+		// No data has yet been retrieved and no other thread is loading it
 		m_state->m_latch.add_notifier( );
+		m_state->m_working = true;
 		return std::async( std::launch::async, [&] {
 			type new_value = ( *this )( );
 			{
 				auto const local_lck = std::unique_lock( m_state->m_mut );
+				(void)local_lck;
 				m_state->m_value = new_value;
 				m_state->m_time_of_retrieval = std::chrono::system_clock::now( );
+				m_state->m_working = false;
 			}
 			m_state->m_latch.notify( );
 			return new_value;
