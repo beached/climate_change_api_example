@@ -29,7 +29,7 @@ static const Newspaper newspapers[] = {
   },
   {
     "telegraph",
-    "https://www.telegraph.co.uk/climate-change",
+    "https://www.telegraph.co.uk/climate-change/",
     "https://www.telegraph.co.uk",
   },
   {

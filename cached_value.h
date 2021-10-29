@@ -8,6 +8,7 @@
 
 #pragma once
 
+#include <daw/daw_random.h>
 #include <daw/parallel/daw_latch.h>
 
 #include <atomic>
@@ -43,7 +44,9 @@ namespace daw {
 	public:
 		CachedValue( retriever_t const &retriever )
 		  : Retriever( retriever )
-		  , m_state( std::make_unique<state_t>( std::chrono::seconds( 3600 ) ) ) {}
+		  , m_state( std::make_unique<state_t>(
+		      std::chrono::seconds( 3600 + daw::randint<int>( -100, 100 ) ) ) ) {
+		}
 
 		CachedValue( retriever_t const &retriever, std::chrono::seconds ttl )
 		  : retriever_t( retriever )
@@ -82,17 +85,23 @@ namespace daw {
 			// No data has yet been retrieved and no other thread is loading it
 			m_state->m_latch.add_notifier( );
 			m_state->m_working = true;
-			return std::async( std::launch::async, [&] {
-				type new_value = ( *this )( );
-				{
-					auto const local_lck = std::unique_lock( m_state->m_mut );
-					(void)local_lck;
-					m_state->m_value = new_value;
-					m_state->m_time_of_retrieval = std::chrono::system_clock::now( );
+			return std::async( std::launch::async, [&]( ) -> type {
+				try {
+					type new_value = ( *this )( );
+					{
+						auto const local_lck = std::unique_lock( m_state->m_mut );
+						(void)local_lck;
+						m_state->m_value = new_value;
+						m_state->m_time_of_retrieval = std::chrono::system_clock::now( );
+						m_state->m_working = false;
+					}
+					m_state->m_latch.notify( );
+					return new_value;
+				} catch( ... ) {
 					m_state->m_working = false;
+					m_state->m_latch.notify( );
+					return type{ };
 				}
-				m_state->m_latch.notify( );
-				return new_value;
 			} );
 		}
 	};

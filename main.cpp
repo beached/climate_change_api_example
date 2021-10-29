@@ -7,6 +7,9 @@
 //
 
 #include "cached_value.h"
+#include "gumbo_handle.h"
+#include "gumbo_node_iterator.h"
+#include "gumbo_vector_iterator.h"
 #include "newspaper.h"
 
 #include <daw/curl_wrapper.h>
@@ -27,23 +30,6 @@
 #include <tuple>
 #include <unordered_map>
 #include <vector>
-
-struct GumboDeleter {
-	constexpr GumboDeleter( ) = default;
-
-	inline void operator( )( GumboOutput *output ) const {
-		if( not output ) {
-			return;
-		}
-		gumbo_destroy_output( &kGumboDefaultOptions, output );
-	}
-};
-
-struct GumboHandle : std::unique_ptr<GumboOutput, GumboDeleter> {
-	using base = std::unique_ptr<GumboOutput, GumboDeleter>;
-	inline GumboHandle( GumboOutput * ptr )
-	  : base( ptr ) {}
-};
 
 struct Url {
 	std::string uri;
@@ -79,10 +65,9 @@ daw::string_view get_tag_text( daw::not_null<GumboNode *> node ) {
 	if( node->type != GUMBO_NODE_ELEMENT ) {
 		return { };
 	}
-	daw::not_null<GumboVector *> children = &node->v.element.children;
-	for( unsigned i = 0; i < children->length; ++i ) {
-		auto *child = static_cast<GumboNode *>( children->data[i] );
-		if( child and child->type == GUMBO_NODE_TEXT ) {
+	for( auto child :
+	     daw::gumbo::GumboVectorIterator( node->v.element.children ) ) {
+		if( child->type == GUMBO_NODE_TEXT ) {
 			return { child->v.text.text };
 		}
 	}
@@ -130,49 +115,44 @@ static void filter_gumbo_nodes( daw::not_null<GumboNode *> root,
 			break;
 		}
 		if( cur_node->type == GUMBO_NODE_ELEMENT ) {
-			daw::not_null<GumboVector *> children = &cur_node->v.element.children;
-			for( unsigned i = 0; i < children->length; ++i ) {
-				auto *child = static_cast<GumboNode *>( children->data[i] );
-				if( not child ) {
-					continue;
-				}
-				to_visit.push_back( daw::not_null{ child } );
-			}
+			auto it = daw::gumbo::GumboVectorIterator( cur_node->v.element.children );
+			to_visit.insert( to_visit.end( ), it, std::end( it ) );
 		}
 	}
 }
 
 template<typename Callback>
-static std::vector<Url> search_for_links( GumboNode *node, Callback onEach ) {
-	auto result = std::vector<Url>{ };
-	if( not node or node->type != GUMBO_NODE_ELEMENT ) {
-		return result;
+static void search_for_links( GumboNode *root_node,
+                                          Callback onEach ) {
+	auto first = daw::gumbo::gumbo_node_iterator_t( root_node );
+	auto const last = daw::gumbo::gumbo_node_iterator_t( );
+	while( first != last ) {
+		daw::not_null<GumboNode *> node = &( *first );
+		if( node->type != GUMBO_NODE_ELEMENT or
+		    node->v.element.tag != GUMBO_TAG_A ) {
+			++first;
+			continue;
+		}
+		GumboAttribute *href =
+		  gumbo_get_attribute( &node->v.element.attributes, "href" );
+		if( href == nullptr ) {
+			// Error in document probably, but just ignore
+			++first;
+			continue;
+		}
+		auto title = daw::parser::trim( get_tag_text( node ) );
+		auto uri = daw::string_view( href->value );
+		if( daw::nsc_or( uri.empty( ),
+		                 title.empty( ),
+		                 not ::Contains( title, "climate" ),
+		                 not uri.starts_with( "http" ),
+		                 uri.find( "climate" ) == daw::string_view::npos ) ) {
+			++first;
+			continue;
+		}
+		(void)onEach( uri, title );
+		++first;
 	}
-	filter_gumbo_nodes(
-	  node,
-	  []( daw::not_null<GumboNode *> n ) {
-		  // Find all A tags
-		  return n->type == GUMBO_NODE_ELEMENT and n->v.element.tag == GUMBO_TAG_A;
-	  },
-	  [&]( daw::not_null<GumboNode *> n ) {
-		  GumboAttribute *href =
-		    gumbo_get_attribute( &n->v.element.attributes, "href" );
-		  if( href == nullptr ) {
-			  // Error in document probably, but just ignore
-			  return;
-		  }
-		  auto title = daw::parser::trim( get_tag_text( n ) );
-		  auto uri = daw::string_view( href->value );
-		  if( daw::nsc_or( uri.empty( ),
-		                   title.empty( ),
-		                   not ::Contains( title, "climate" ),
-		                   not uri.starts_with( "http" ),
-		                   uri.find( "climate" ) == daw::string_view::npos ) ) {
-			  return;
-		  }
-		  (void)onEach( uri, title );
-	  } );
-	return result;
 }
 
 struct HtmlCache {
@@ -189,8 +169,12 @@ struct HtmlCache {
 			    n.name,
 			    cache_t( func_t( [n]( ) {
 				    auto curl = daw::curl_wrapper( );
+				    curl_easy_setopt( static_cast<CURL *>( curl ),
+				                      CURLOPT_FOLLOWLOCATION,
+				                      1L );
 				    auto const html = curl.get_string( n.address );
-				    GumboHandle output =
+
+				    daw::gumbo::GumboHandle output =
 				      gumbo_parse_with_options( &kGumboDefaultOptions,
 				                                html.c_str( ),
 				                                html.size( ) );
@@ -216,8 +200,19 @@ struct HtmlCache {
 int main( ) {
 	static auto html_cache = HtmlCache{ }( );
 	auto app = crow::SimpleApp{ };
+	CROW_ROUTE( app, "/sources/" ).methods( crow::HTTPMethod::GET )( []( ) {
+		std::vector<std::string_view> result{ };
+		result.reserve( html_cache.size( ) );
+		std::transform(
+		  std::begin( html_cache ),
+		  std::end( html_cache ),
+		  std::back_inserter( result ),
+		  []( auto const &kv ) { return std::string_view( kv.first ); } );
+		return crow::response( daw::json::to_json( result ) );
+	} );
 	CROW_ROUTE( app, "/news/" ).methods( crow::HTTPMethod::GET )( []( ) {
 		std::vector<std::future<std::vector<Url>>> urls_fut{ };
+		urls_fut.reserve( html_cache.size( ) );
 		for( auto &c : html_cache ) {
 			urls_fut.push_back( c.second.get( ) );
 		}
@@ -231,15 +226,16 @@ int main( ) {
 		return resp;
 	} );
 	CROW_ROUTE( app, "/news/<string>" )
-	  .methods( crow::HTTPMethod::GET )( []( std::string which_source ) {
+	  .methods( crow::HTTPMethod::GET )( []( std::string const &which_source ) {
 		  auto it = html_cache.find( which_source );
 		  if( it == std::end( html_cache ) ) {
-			  return crow::response( 404U, "Unable to find data" );
+			  return crow::response( 404U );
 		  }
 		  auto resp =
 		    crow::response( daw::json::to_json( it->second.get( ).get( ) ) );
 		  resp.add_header( "Content-Type", "application/json" );
 		  return resp;
 	  } );
+	app.loglevel( crow::LogLevel::Error );
 	app.port( 8080 ).multithreaded( ).run( );
 }
