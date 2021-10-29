@@ -94,11 +94,13 @@ namespace daw::gumbo {
 					return *this;
 				}
 				daw::not_null<pointer> parent = cur_node->parent;
-				auto const cur_idx = cur_node->index_within_parent;
+				auto cur_idx = cur_node->index_within_parent;
 				auto const max_idx = get_children_count( parent );
 				if( cur_idx + 1 < max_idx ) {
 					// Parent node has more children left, choose next one
-					m_node = get_child_node_at( parent, cur_idx + 1 );
+					pointer next_child = get_child_node_at( parent, cur_idx + 1 );
+					assert( next_child );
+					m_node = next_child;
 					return *this;
 				}
 				// The parent node has no more children, move up tree

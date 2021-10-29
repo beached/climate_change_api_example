@@ -122,14 +122,15 @@ static void filter_gumbo_nodes( daw::not_null<GumboNode *> root,
 }
 
 template<typename Callback>
-static void search_for_links( GumboNode *root_node,
-                                          Callback onEach ) {
+static void search_for_links( GumboNode *root_node, Callback onEach ) {
 	auto first = daw::gumbo::gumbo_node_iterator_t( root_node );
 	auto const last = daw::gumbo::gumbo_node_iterator_t( );
+	auto last_node = daw::gumbo::gumbo_node_iterator_t( );
 	while( first != last ) {
 		daw::not_null<GumboNode *> node = &( *first );
 		if( node->type != GUMBO_NODE_ELEMENT or
 		    node->v.element.tag != GUMBO_TAG_A ) {
+			last_node = first;
 			++first;
 			continue;
 		}
@@ -137,6 +138,7 @@ static void search_for_links( GumboNode *root_node,
 		  gumbo_get_attribute( &node->v.element.attributes, "href" );
 		if( href == nullptr ) {
 			// Error in document probably, but just ignore
+			last_node = first;
 			++first;
 			continue;
 		}
@@ -147,12 +149,15 @@ static void search_for_links( GumboNode *root_node,
 		                 not ::Contains( title, "climate" ),
 		                 not uri.starts_with( "http" ),
 		                 uri.find( "climate" ) == daw::string_view::npos ) ) {
+			last_node = first;
 			++first;
 			continue;
 		}
 		(void)onEach( uri, title );
+		last_node = first;
 		++first;
 	}
+	(void)last_node;
 }
 
 struct HtmlCache {
@@ -199,43 +204,46 @@ struct HtmlCache {
 
 int main( ) {
 	static auto html_cache = HtmlCache{ }( );
+	/*
 	auto app = crow::SimpleApp{ };
 	CROW_ROUTE( app, "/sources/" ).methods( crow::HTTPMethod::GET )( []( ) {
-		std::vector<std::string_view> result{ };
-		result.reserve( html_cache.size( ) );
-		std::transform(
-		  std::begin( html_cache ),
-		  std::end( html_cache ),
-		  std::back_inserter( result ),
-		  []( auto const &kv ) { return std::string_view( kv.first ); } );
-		return crow::response( daw::json::to_json( result ) );
+	  std::vector<std::string_view> result{ };
+	  result.reserve( html_cache.size( ) );
+	  std::transform(
+	    std::begin( html_cache ),
+	    std::end( html_cache ),
+	    std::back_inserter( result ),
+	    []( auto const &kv ) { return std::string_view( kv.first ); } );
+	  return crow::response( daw::json::to_json( result ) );
 	} );
 	CROW_ROUTE( app, "/news/" ).methods( crow::HTTPMethod::GET )( []( ) {
-		std::vector<std::future<std::vector<Url>>> urls_fut{ };
-		urls_fut.reserve( html_cache.size( ) );
-		for( auto &c : html_cache ) {
-			urls_fut.push_back( c.second.get( ) );
-		}
-		std::vector<Url> all_urls{ };
-		for( auto &f : urls_fut ) {
-			auto u = f.get( );
-			all_urls.insert( std::end( all_urls ), std::begin( u ), std::end( u ) );
-		}
-		auto resp = crow::response( daw::json::to_json( all_urls ) );
-		resp.add_header( "Content-Type", "application/json" );
-		return resp;
+	  std::vector<std::future<std::vector<Url>>> urls_fut{ };
+	  urls_fut.reserve( html_cache.size( ) );
+	  for( auto &c : html_cache ) {
+	    urls_fut.push_back( c.second.get( ) );
+	  }
+	  std::vector<Url> all_urls{ };
+	  for( auto &f : urls_fut ) {
+	    auto u = f.get( );
+	    all_urls.insert( std::end( all_urls ), std::begin( u ), std::end( u ) );
+	  }
+	  auto resp = crow::response( daw::json::to_json( all_urls ) );
+	  resp.add_header( "Content-Type", "application/json" );
+	  return resp;
 	} );
 	CROW_ROUTE( app, "/news/<string>" )
 	  .methods( crow::HTTPMethod::GET )( []( std::string const &which_source ) {
-		  auto it = html_cache.find( which_source );
-		  if( it == std::end( html_cache ) ) {
-			  return crow::response( 404U );
-		  }
-		  auto resp =
-		    crow::response( daw::json::to_json( it->second.get( ).get( ) ) );
-		  resp.add_header( "Content-Type", "application/json" );
-		  return resp;
+	    auto it = html_cache.find( which_source );
+	    if( it == std::end( html_cache ) ) {
+	      return crow::response( 404U );
+	    }
+	    auto resp =
+	      crow::response( daw::json::to_json( it->second.get( ).get( ) ) );
+	    resp.add_header( "Content-Type", "application/json" );
+	    return resp;
 	  } );
 	app.loglevel( crow::LogLevel::Error );
 	app.port( 8080 ).multithreaded( ).run( );
+	 */
+	return html_cache.size( );
 }
