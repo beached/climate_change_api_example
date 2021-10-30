@@ -206,14 +206,20 @@ int main( ) {
 	static auto html_cache = HtmlCache{ }( );
 	auto app = crow::SimpleApp{ };
 	CROW_ROUTE( app, "/sources/" ).methods( crow::HTTPMethod::GET )( []( ) {
-		std::vector<std::string_view> result{ };
-		result.reserve( html_cache.size( ) );
-		std::transform(
-		  std::begin( html_cache ),
-		  std::end( html_cache ),
-		  std::back_inserter( result ),
-		  []( auto const &kv ) { return std::string_view( kv.first ); } );
-		return crow::response( daw::json::to_json( result ) );
+		auto cached_page =
+		  daw::CachedValue{ [&] {
+			                   std::vector<std::string_view> result{ };
+			                   result.reserve( html_cache.size( ) );
+			                   std::transform( std::begin( html_cache ),
+			                                   std::end( html_cache ),
+			                                   std::back_inserter( result ),
+			                                   []( auto const &kv ) {
+				                                   return std::string_view( kv.first );
+			                                   } );
+			                   return daw::json::to_json( result );
+		                   },
+		                    std::chrono::seconds( 900U ) };
+		return crow::response( cached_page.get( ).get( ) );
 	} );
 	CROW_ROUTE( app, "/news/" ).methods( crow::HTTPMethod::GET )( []( ) {
 		std::vector<std::future<std::vector<Url>>> urls_fut{ };
