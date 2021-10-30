@@ -29,6 +29,7 @@ namespace daw::gumbo {
 
 	private:
 		pointer m_node = nullptr;
+		std::ptrdiff_t m_depth = 0;
 
 	public:
 		constexpr gumbo_node_iterator_t( ) noexcept = default;
@@ -40,6 +41,10 @@ namespace daw::gumbo {
 			return *m_node;
 		}
 
+		[[nodiscard]] inline pointer get( ) const {
+			return m_node;
+		}
+
 		[[nodiscard]] inline pointer operator->( ) const {
 			return m_node;
 		}
@@ -48,12 +53,18 @@ namespace daw::gumbo {
 		static pointer get_child_node_at( daw::not_null<pointer> node,
 		                                  std::size_t index ) noexcept {
 			switch( node->type ) {
-			case GumboNodeType::GUMBO_NODE_ELEMENT:
-				return reinterpret_cast<pointer *>(
-				  node->v.element.children.data )[index];
-			case GumboNodeType::GUMBO_NODE_DOCUMENT:
-				return reinterpret_cast<pointer *>(
-				  node->v.document.children.data )[index];
+			case GumboNodeType::GUMBO_NODE_ELEMENT: {
+				pointer *const ary =
+				  reinterpret_cast<pointer *>( node->v.element.children.data );
+				pointer result = ary[index];
+				return result;
+			}
+			case GumboNodeType::GUMBO_NODE_DOCUMENT: {
+				pointer *const ary =
+				  reinterpret_cast<pointer *>( node->v.document.children.data );
+				pointer result = ary[index];
+				return result;
+			}
 			default:
 				return nullptr;
 			}
@@ -81,9 +92,13 @@ namespace daw::gumbo {
 			daw::not_null<pointer> cur_node = m_node;
 			// Check if we have any children.  Will always be first because they will
 			// iterate through their parents children
-			if( pointer child_node = get_child_node_at( cur_node, 0 ); child_node ) {
-				m_node = child_node;
-				return *this;
+			if( get_children_count( cur_node ) > 0 ) {
+				if( pointer child_node = get_child_node_at( cur_node, 0 );
+				    child_node ) {
+					--m_depth;
+					m_node = child_node;
+					return *this;
+				}
 			}
 
 			// No child nodes, go to parent and look for it's next child
@@ -104,6 +119,7 @@ namespace daw::gumbo {
 					return *this;
 				}
 				// The parent node has no more children, move up tree
+				++m_depth;
 				cur_node = parent.get( );
 			}
 		}
