@@ -40,5 +40,10 @@ FetchContent_Declare(
         GIT_TAG main
 )
 
+FetchContent_Declare(
+        daw_gumbo_pp
+        GIT_REPOSITORY https://github.com/beached/gumbo_pp.git
+        GIT_TAG main
+)
 
-FetchContent_MakeAvailable(daw_header_libraries daw_json_link curl_wrapper daw_utf_range daw_parallel )
+FetchContent_MakeAvailable(daw_header_libraries daw_json_link curl_wrapper daw_utf_range daw_parallel daw_gumbo_pp)

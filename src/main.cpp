@@ -7,17 +7,18 @@
 //
 
 #include "cached_value.h"
-#include "gumbo_handle.h"
-#include "gumbo_node_iterator.h"
-#include "gumbo_vector_iterator.h"
 #include "newspaper.h"
 
 #include <daw/curl_wrapper.h>
 #include <daw/daw_logic.h>
+#include <daw/daw_memory_mapped_file.h>
 #include <daw/daw_move.h>
 #include <daw/daw_not_null.h>
 #include <daw/daw_parser_helper_sv.h>
 #include <daw/daw_string_view.h>
+#include <daw/gumbo_pp/gumbo_algorithms.h>
+#include <daw/gumbo_pp/gumbo_handle.h>
+#include <daw/gumbo_pp/gumbo_node_iterator.h>
 #include <daw/json/daw_json_link.h>
 #include <daw/utf8.h>
 
@@ -26,6 +27,7 @@
 #include <crow.h>
 #include <future>
 #include <gumbo.h>
+#include <initializer_list>
 #include <iterator>
 #include <tuple>
 #include <unordered_map>
@@ -61,19 +63,6 @@ namespace daw::json {
 	};
 } // namespace daw::json
 
-daw::string_view get_tag_text( daw::not_null<GumboNode *> node ) {
-	if( node->type != GUMBO_NODE_ELEMENT ) {
-		return { };
-	}
-	for( auto child :
-	     daw::gumbo::GumboVectorIterator( node->v.element.children ) ) {
-		if( child->type == GUMBO_NODE_TEXT ) {
-			return { child->v.text.text };
-		}
-	}
-	return { };
-}
-
 template<typename StringView>
 constexpr bool Contains( StringView const &sv, daw::string_view key ) {
 	auto haystack_first = daw::utf8::unchecked::iterator( std::data( sv ) );
@@ -93,83 +82,46 @@ constexpr bool Contains( StringView const &sv, daw::string_view key ) {
 
 enum class filter_action : int { exclude = 0, include = 1, stop = -1 };
 
-template<typename Filter, typename Callback>
-static void filter_gumbo_nodes( daw::not_null<GumboNode *> root,
-                                Filter filter,
-                                Callback onEach ) {
-	auto to_visit = std::vector<daw::not_null<GumboNode *>>( );
-	to_visit.reserve( 1024UL );
-	to_visit.push_back( root );
-	while( not to_visit.empty( ) ) {
-		auto cur_node = to_visit.back( );
-		to_visit.pop_back( );
-		auto const fres = static_cast<filter_action>( filter( cur_node.get( ) ) );
-		switch( fres ) {
-		case filter_action::include:
-			(void)onEach( cur_node.get( ) );
-			break;
-		case filter_action::stop:
-			return;
-		case filter_action::exclude:
-		default:
-			break;
-		}
-		if( cur_node->type == GUMBO_NODE_ELEMENT ) {
-			auto it = daw::gumbo::GumboVectorIterator( cur_node->v.element.children );
-			to_visit.insert( to_visit.end( ), it, std::end( it ) );
-		}
-	}
+constexpr bool starts_with( daw::string_view haystack,
+                            daw::string_view needle ) {
+	return haystack.substr( 0, needle.length( ) ) == needle;
 }
 
 template<typename Callback>
-static void search_for_links( GumboNode *root_node, Callback onEach ) {
-	auto first = daw::gumbo::gumbo_node_iterator_t( root_node );
-	auto const last = daw::gumbo::gumbo_node_iterator_t( );
-	auto last_node = daw::gumbo::gumbo_node_iterator_t( );
-	while( first != last ) {
-		daw::not_null<GumboNode *> node = first.get( );
-		if( node->type != GUMBO_NODE_ELEMENT or
-		    node->v.element.tag != GUMBO_TAG_A ) {
-			last_node = first;
-			++first;
-			continue;
-		}
-		GumboAttribute *href =
-		  gumbo_get_attribute( &node->v.element.attributes, "href" );
-		if( href == nullptr ) {
-			// Error in document probably, but just ignore
-			last_node = first;
-			++first;
-			continue;
-		}
-		auto title = daw::parser::trim( get_tag_text( node ) );
-		auto uri = daw::string_view( href->value );
-		if( daw::nsc_or( uri.empty( ),
-		                 title.empty( ),
-		                 not ::Contains( title, "climate" ),
-		                 not uri.starts_with( "http" ),
-		                 uri.find( "climate" ) == daw::string_view::npos ) ) {
-			last_node = first;
-			++first;
-			continue;
-		}
-		(void)onEach( uri, title );
-		last_node = first;
-		++first;
-	}
-	(void)last_node;
+static void
+search_for_links_with_text( GumboNode *root_node,
+                            std::initializer_list<daw::string_view> queries,
+                            Callback onEach ) {
+	(void)daw::gumbo::find_all_oneach(
+	  daw::gumbo::gumbo_node_iterator_t( root_node ),
+	  daw::gumbo::gumbo_node_iterator_t( ),
+	  GUMBO_TAG_A,
+	  [&]( GumboNode const &node ) {
+		  auto uri = daw::gumbo::node_attribute_value( node, "href" );
+		  if( not starts_with( uri, "http" ) ) {
+			  return;
+		  }
+		  auto title = daw::parser::trim( daw::gumbo::node_text( node ) );
+		  for( auto q : queries ) {
+			  if( daw::nsc_or( ::Contains( title, q ), ::Contains( uri, q ) ) ) {
+				  (void)onEach( uri, title );
+				  return;
+			  }
+		  }
+	  } );
 }
 
 struct HtmlCache {
 	using func_t = std::function<std::vector<Url>( )>;
 	using cache_t = daw::CachedValue<std::vector<Url>, func_t>;
-	std::unordered_map<std::string, cache_t> operator( )( ) const {
+	std::unordered_map<std::string, cache_t>
+	operator( )( std::vector<daw::climate::Newspaper> const &newspapers ) const {
 		auto result = std::unordered_map<std::string, cache_t>{ };
 		std::transform(
 		  std::begin( newspapers ),
 		  std::end( newspapers ),
 		  std::inserter( result, std::begin( result ) ),
-		  []( Newspaper const &n ) {
+		  []( daw::climate::Newspaper const &n ) {
 			  return std::pair<std::string, cache_t>(
 			    n.name,
 			    cache_t( func_t( [n]( ) {
@@ -185,13 +137,17 @@ struct HtmlCache {
 				                                html.size( ) );
 				    std::vector<Url> r{ };
 				    r.reserve( 128 ); // Get past small allocations
-				    search_for_links( output->root,
-				                      [&]( std::string uri, std::string title ) {
-					                      uri = n.base + uri;
-					                      r.push_back( Url{ DAW_MOVE( uri ),
-					                                        DAW_MOVE( title ),
-					                                        n.name } );
-				                      } );
+				    search_for_links_with_text(
+				      output->root,
+				      { "climate" },
+				      [&]( auto &&uri, auto &&title ) {
+					      std::string u{ };
+					      u.reserve( std::size( n.base ) + std::size( uri ) );
+					      u.append( std::data( n.base ), std::size( n.base ) );
+					      u.append( std::data( uri ), std::size( uri ) );
+					      std::string t( std::data( title ), std::size( title ) );
+					      r.push_back( Url{ DAW_MOVE( u ), DAW_MOVE( t ), n.name } );
+				      } );
 				    std::sort( std::begin( r ), std::end( r ) );
 				    r.erase( std::unique( std::begin( r ), std::end( r ) ),
 				             std::end( r ) );
@@ -202,26 +158,29 @@ struct HtmlCache {
 	}
 };
 
-int main( ) {
-	static auto html_cache = HtmlCache{ }( );
+int main( int argc, char **argv ) {
+	if( argc < 2 ) {
+		std::cerr << "Must supply a newspaper.json file\n";
+		exit( EXIT_FAILURE );
+	}
+	auto html_cache = [&] {
+		auto json_data = daw::filesystem::memory_mapped_file_t<char>( argv[1] );
+		auto newspapers =
+		  daw::json::from_json<std::vector<daw::climate::Newspaper>>( json_data );
+		return HtmlCache{ }( newspapers );
+	}( );
 	auto app = crow::SimpleApp{ };
-	CROW_ROUTE( app, "/sources/" ).methods( crow::HTTPMethod::GET )( []( ) {
-		auto cached_page =
-		  daw::CachedValue{ [&] {
-			                   std::vector<std::string_view> result{ };
-			                   result.reserve( html_cache.size( ) );
-			                   std::transform( std::begin( html_cache ),
-			                                   std::end( html_cache ),
-			                                   std::back_inserter( result ),
-			                                   []( auto const &kv ) {
-				                                   return std::string_view( kv.first );
-			                                   } );
-			                   return daw::json::to_json( result );
-		                   },
-		                    std::chrono::seconds( 900U ) };
-		return crow::response( cached_page.get( ).get( ) );
+	CROW_ROUTE( app, "/sources/" ).methods( crow::HTTPMethod::GET )( [&]( ) {
+		std::vector<std::string_view> result{ };
+		result.reserve( html_cache.size( ) );
+		std::transform(
+		  std::begin( html_cache ),
+		  std::end( html_cache ),
+		  std::back_inserter( result ),
+		  []( auto const &kv ) { return std::string_view( kv.first ); } );
+		return crow::response( daw::json::to_json( result ) );
 	} );
-	CROW_ROUTE( app, "/news/" ).methods( crow::HTTPMethod::GET )( []( ) {
+	CROW_ROUTE( app, "/news/" ).methods( crow::HTTPMethod::GET )( [&]( ) {
 		std::vector<std::future<std::vector<Url>>> urls_fut{ };
 		urls_fut.reserve( html_cache.size( ) );
 		for( auto &c : html_cache ) {
@@ -237,7 +196,7 @@ int main( ) {
 		return resp;
 	} );
 	CROW_ROUTE( app, "/news/<string>" )
-	  .methods( crow::HTTPMethod::GET )( []( std::string const &which_source ) {
+	  .methods( crow::HTTPMethod::GET )( [&]( std::string const &which_source ) {
 		  auto it = html_cache.find( which_source );
 		  if( it == std::end( html_cache ) ) {
 			  return crow::response( 404U );
@@ -248,6 +207,5 @@ int main( ) {
 		  return resp;
 	  } );
 	app.loglevel( crow::LogLevel::Error );
-	app.port( 8080 ).multithreaded( ).run( );
-	return html_cache.size( );
+	app.port( 8080 )./*multithreaded( ).*/ run( );
 }
