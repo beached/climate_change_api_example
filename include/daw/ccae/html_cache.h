@@ -9,8 +9,8 @@
 #pragma once
 
 #include "cached_value.h"
+#include "filter_config.h"
 #include "link_search.h"
-#include "newspaper.h"
 #include "url.h"
 
 #include <daw/curl_wrapper.h>
@@ -28,16 +28,16 @@ namespace daw::ccae {
 		using func_t = std::function<std::vector<Url>( )>;
 		using cache_t = daw::ccae::cached_value_t<std::vector<Url>, func_t>;
 		std::unordered_map<std::string, cache_t>
-		operator( )( std::vector<daw::ccae::Newspaper> const &newspapers ) const {
+		operator( )( daw::ccae::filter_config_t const &filter_config ) const {
 			auto result = std::unordered_map<std::string, cache_t>{ };
 			std::transform(
-			  std::begin( newspapers ),
-			  std::end( newspapers ),
+			  std::begin( filter_config.urls ),
+			  std::end( filter_config.urls ),
 			  std::inserter( result, std::end( result ) ),
-			  []( daw::ccae::Newspaper const &n ) {
+			  [&filter_config]( daw::ccae::url_source_t const &n ) {
 				  return std::pair<std::string, cache_t>(
 				    n.name,
-				    cache_t( func_t( [n]( ) {
+				    cache_t( func_t( [n, keywords = filter_config.keywords] {
 					    auto curl = daw::curl_wrapper( );
 					    curl_easy_setopt( static_cast<CURL *>( curl ),
 					                      CURLOPT_FOLLOWLOCATION,
@@ -52,7 +52,7 @@ namespace daw::ccae {
 					    r.reserve( 128 ); // Get past small allocations
 					    search_for_links_with_text(
 					      output->root,
-					      { "climate" },
+					      keywords,
 					      [&]( auto &&uri, auto &&title ) {
 						      std::string u{ };
 						      u.reserve( std::size( n.base ) + std::size( uri ) );

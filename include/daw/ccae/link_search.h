@@ -50,7 +50,7 @@ namespace daw::ccae {
 	template<typename Callback>
 	static void
 	search_for_links_with_text( GumboNode *root_node,
-	                            std::initializer_list<daw::string_view> queries,
+	                            std::vector<std::string> const &queries,
 	                            Callback onEach ) {
 		(void)daw::gumbo::find_all_oneach(
 		  daw::gumbo::gumbo_node_iterator_t( root_node ),
@@ -62,8 +62,11 @@ namespace daw::ccae {
 				  return;
 			  }
 			  auto title = daw::parser::trim( daw::gumbo::node_text( node ) );
+			  if( title.empty( ) ) {
+				  return;
+			  }
 			  for( auto q : queries ) {
-				  if( nsc_and( title.empty( ),
+				  if( nsc_and( not title.empty( ),
 				               daw::nsc_or( details::Contains( title, q ),
 				                            details::Contains( uri, q ) ) ) ) {
 					  (void)onEach( uri, title );

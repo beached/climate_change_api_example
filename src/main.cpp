@@ -6,8 +6,8 @@
 // Official repository: https://github.com/beached/climate_change_api_example
 //
 
+#include "daw/ccae/filter_config.h"
 #include "daw/ccae/html_cache.h"
-#include "daw/ccae/newspaper.h"
 #include "daw/ccae/url.h"
 
 #include <daw/daw_memory_mapped_file.h>
@@ -23,17 +23,25 @@
 
 int main( int argc, char **argv ) {
 	if( argc < 2 ) {
-		std::cerr << "Must supply a newspaper.json file\n";
+		std::cerr << "Must supply a filter_config.json file\n";
 		exit( EXIT_FAILURE );
 	}
-	auto newspapers_json = daw::filesystem::memory_mapped_file_t<char>( argv[1] );
-	auto newspapers =
-	  daw::json::from_json<std::vector<daw::ccae::Newspaper>>( newspapers_json );
-	auto html_cache = [&] { return daw::ccae::html_cache_t{ }( newspapers ); }( );
+	auto filter_config_json =
+	  daw::filesystem::memory_mapped_file_t<char>( argv[1] );
+	if( not filter_config_json ) {
+		std::cerr << "Unable to open file or it is empty\n";
+		exit( EXIT_FAILURE );
+	}
+	auto filter_config =
+	  daw::json::from_json<daw::ccae::filter_config_t>( filter_config_json );
+	auto html_cache = [&] {
+		return daw::ccae::html_cache_t{ }( filter_config );
+	}( );
 	auto app = crow::SimpleApp{ };
 	CROW_ROUTE( app, "/sources/" ).methods( crow::HTTPMethod::GET )( [&]( ) {
-		return crow::response(
-		  std::string( newspapers_json.data( ), newspapers_json.size( ) ) );
+		static const std::string sources_string =
+		  daw::json::to_json( filter_config.urls );
+		return crow::response( sources_string );
 	} );
 	CROW_ROUTE( app, "/news/" ).methods( crow::HTTPMethod::GET )( [&]( ) {
 		try {
