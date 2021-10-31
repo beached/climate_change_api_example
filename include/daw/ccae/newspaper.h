@@ -11,17 +11,17 @@
 #include <daw/json/daw_json_link.h>
 #include <string>
 
-namespace daw::climate {
+namespace daw::ccae {
 	struct Newspaper {
 		std::string name;
 		std::string address;
 		std::string base;
 	};
-} // namespace daw::climate
+} // namespace daw::ccae
 
 namespace daw::json {
 	template<>
-	struct json_data_contract<::daw::climate::Newspaper> {
+	struct json_data_contract<daw::ccae::Newspaper> {
 		static constexpr char const name[] = "name";
 		static constexpr char const address[] = "address";
 		static constexpr char const base[] = "base";

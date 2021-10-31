@@ -19,9 +19,9 @@
 #include <optional>
 #include <type_traits>
 
-namespace daw {
+namespace daw::ccae {
 	template<typename T, typename Retriever>
-	struct CachedValue : private Retriever {
+	struct cached_value_t : private Retriever {
 		static_assert( std::is_invocable_r_v<T, Retriever> );
 		using type = T;
 		using retriever_t = Retriever;
@@ -42,13 +42,12 @@ namespace daw {
 		std::unique_ptr<state_t> m_state;
 
 	public:
-		CachedValue( retriever_t const &retriever )
+		cached_value_t( retriever_t const &retriever )
 		  : Retriever( retriever )
 		  , m_state( std::make_unique<state_t>(
-		      std::chrono::seconds( 3600 + daw::randint<int>( -100, 100 ) ) ) ) {
-		}
+		      std::chrono::seconds( 3600 + daw::randint<int>( -100, 100 ) ) ) ) {}
 
-		CachedValue( retriever_t const &retriever, std::chrono::seconds ttl )
+		cached_value_t( retriever_t const &retriever, std::chrono::seconds ttl )
 		  : retriever_t( retriever )
 		  , m_state( std::make_unique<state_t>( ttl ) ) {}
 
@@ -74,7 +73,7 @@ namespace daw {
 			if( m_state->m_working.load( ) ) {
 				// We have not yet retrieved data and another thread has started the
 				// load. Wait for it and then return the new data
-				return std::async( std::launch::async, [&] {
+				return std::async( std::launch::deferred, [&] {
 					m_state->m_latch.wait( );
 					auto const local_lck = std::unique_lock( m_state->m_mut );
 					(void)local_lck;
@@ -85,7 +84,7 @@ namespace daw {
 			// No data has yet been retrieved and no other thread is loading it
 			m_state->m_latch.add_notifier( );
 			m_state->m_working = true;
-			return std::async( std::launch::async, [&]( ) -> type {
+			return std::async( std::launch::deferred, [&]( ) -> type {
 				try {
 					type new_value = ( *this )( );
 					{
@@ -106,9 +105,9 @@ namespace daw {
 		}
 	};
 	template<typename Ret>
-	CachedValue( Ret ) -> CachedValue<std::invoke_result_t<Ret>, Ret>;
+	cached_value_t( Ret ) -> cached_value_t<std::invoke_result_t<Ret>, Ret>;
 
 	template<typename Ret>
-	CachedValue( Ret, std::chrono::seconds )
-	  -> CachedValue<std::invoke_result_t<Ret>, Ret>;
-} // namespace daw
+	cached_value_t( Ret, std::chrono::seconds )
+	  -> cached_value_t<std::invoke_result_t<Ret>, Ret>;
+} // namespace daw::ccae
