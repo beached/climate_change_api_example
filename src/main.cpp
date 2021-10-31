@@ -15,7 +15,6 @@
 
 #define CROW_MAIN
 
-#include <algorithm>
 #include <crow.h>
 #include <future>
 #include <iterator>
@@ -27,38 +26,31 @@ int main( int argc, char **argv ) {
 		std::cerr << "Must supply a newspaper.json file\n";
 		exit( EXIT_FAILURE );
 	}
-	auto html_cache = [&] {
-		auto json_data = daw::filesystem::memory_mapped_file_t<char>( argv[1] );
-		auto newspapers =
-		  daw::json::from_json<std::vector<daw::ccae::Newspaper>>( json_data );
-		return daw::ccae::html_cache_t{ }( newspapers );
-	}( );
+	auto newspapers_json = daw::filesystem::memory_mapped_file_t<char>( argv[1] );
+	auto newspapers =
+	  daw::json::from_json<std::vector<daw::ccae::Newspaper>>( newspapers_json );
+	auto html_cache = [&] { return daw::ccae::html_cache_t{ }( newspapers ); }( );
 	auto app = crow::SimpleApp{ };
 	CROW_ROUTE( app, "/sources/" ).methods( crow::HTTPMethod::GET )( [&]( ) {
-		std::vector<std::string_view> result{ };
-		result.reserve( html_cache.size( ) );
-		std::transform(
-		  std::begin( html_cache ),
-		  std::end( html_cache ),
-		  std::back_inserter( result ),
-		  []( auto const &kv ) { return std::string_view( kv.first ); } );
-		return crow::response( daw::json::to_json( result ) );
+		return crow::response(
+		  std::string( newspapers_json.data( ), newspapers_json.size( ) ) );
 	} );
 	CROW_ROUTE( app, "/news/" ).methods( crow::HTTPMethod::GET )( [&]( ) {
 		try {
-			std::vector<std::future<std::vector<daw::ccae::Url>>> urls_fut{ };
-			urls_fut.reserve( html_cache.size( ) );
-			for( auto &c : html_cache ) {
-				urls_fut.push_back( c.second.get( ) );
-			}
 			std::vector<daw::ccae::Url> all_urls{ };
-			for( auto &f : urls_fut ) {
-				auto u = f.get( );
-				all_urls.insert( std::end( all_urls ), std::begin( u ), std::end( u ) );
+			for( auto &c : html_cache ) {
+				auto const &urls = c.second.get( ).get( );
+				all_urls.insert( std::end( all_urls ),
+				                 std::begin( urls ),
+				                 std::end( urls ) );
 			}
+
 			auto resp = crow::response( daw::json::to_json( all_urls ) );
 			resp.add_header( "Content-Type", "application/json" );
 			return resp;
+		} catch( std::exception const &ex ) {
+			std::cerr << "Error processing: " << ex.what( ) << '\n';
+			return crow::response( 500 );
 		} catch( ... ) { return crow::response( 500 ); }
 	} );
 	CROW_ROUTE( app, "/news/<string>" )
@@ -75,8 +67,10 @@ int main( int argc, char **argv ) {
 	app.loglevel( crow::LogLevel::Error );
 	if( char const *ptr = std::getenv( "PORT" ); ptr ) {
 		int port = std::atof( ptr );
+		std::cout << "Listening on port: " << ptr << '\n';
 		app.port( port ).multithreaded( ).run( );
 	} else {
+		std::cout << "Listening on port: 8080\n";
 		app.port( 8080 ).multithreaded( ).run( );
 	}
 }

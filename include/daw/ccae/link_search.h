@@ -18,6 +18,7 @@
 
 #include <gumbo.h>
 #include <initializer_list>
+#include <iostream>
 
 namespace daw::ccae::details {
 	/// Do a case insensitive(for ASCII) compare
@@ -60,11 +61,11 @@ namespace daw::ccae {
 			  if( not details::starts_with( uri, "http" ) ) {
 				  return;
 			  }
-			  auto title =
-			    daw::parser::trim( daw::gumbo::node_text( node ) );
+			  auto title = daw::parser::trim( daw::gumbo::node_text( node ) );
 			  for( auto q : queries ) {
-				  if( daw::nsc_or( details::Contains( title, q ),
-				                   details::Contains( uri, q ) ) ) {
+				  if( nsc_and( title.empty( ),
+				               daw::nsc_or( details::Contains( title, q ),
+				                            details::Contains( uri, q ) ) ) ) {
 					  (void)onEach( uri, title );
 					  return;
 				  }
