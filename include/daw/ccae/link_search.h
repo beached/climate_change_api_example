@@ -60,7 +60,8 @@ namespace daw::ccae {
 			  if( not details::starts_with( uri, "http" ) ) {
 				  return;
 			  }
-			  auto title = daw::parser::trim( daw::gumbo::node_text( node ) );
+			  auto title =
+			    daw::parser::trim( daw::gumbo::node_text( node ) );
 			  for( auto q : queries ) {
 				  if( daw::nsc_or( details::Contains( title, q ),
 				                   details::Contains( uri, q ) ) ) {

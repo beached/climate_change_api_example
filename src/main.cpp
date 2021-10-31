@@ -75,8 +75,8 @@ int main( int argc, char **argv ) {
 	app.loglevel( crow::LogLevel::Error );
 	if( char const *ptr = std::getenv( "PORT" ); ptr ) {
 		int port = std::atof( ptr );
-		app.port( port )./*multithreaded( ).*/ run( );
+		app.port( port ).multithreaded( ).run( );
 	} else {
-		app.port( 8080 )./*multithreaded( ).*/ run( );
+		app.port( 8080 ).multithreaded( ).run( );
 	}
 }

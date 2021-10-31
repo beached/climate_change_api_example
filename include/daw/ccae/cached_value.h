@@ -73,7 +73,7 @@ namespace daw::ccae {
 			if( m_state->m_working.load( ) ) {
 				// We have not yet retrieved data and another thread has started the
 				// load. Wait for it and then return the new data
-				return std::async( std::launch::deferred, [&] {
+				return std::async( std::launch::async, [&] {
 					m_state->m_latch.wait( );
 					auto const local_lck = std::unique_lock( m_state->m_mut );
 					(void)local_lck;
@@ -84,7 +84,7 @@ namespace daw::ccae {
 			// No data has yet been retrieved and no other thread is loading it
 			m_state->m_latch.add_notifier( );
 			m_state->m_working = true;
-			return std::async( std::launch::deferred, [&]( ) -> type {
+			return std::async( std::launch::async, [&]( ) -> type {
 				try {
 					type new_value = ( *this )( );
 					{
