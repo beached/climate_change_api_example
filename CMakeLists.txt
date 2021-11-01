@@ -27,7 +27,6 @@ target_link_libraries(
         Boost::boost
         ${CROW_LIBRARIES}
         daw::daw-gumbo-pp
-        ${GUMBO_LIBRARIES}
 )
 
 install(TARGETS ${PROJECT_NAME}

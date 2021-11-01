@@ -11,9 +11,7 @@
 #include <daw/daw_logic.h>
 #include <daw/daw_parser_helper_sv.h>
 #include <daw/daw_string_view.h>
-#include <daw/gumbo_pp/gumbo_algorithms.h>
-#include <daw/gumbo_pp/gumbo_node_iterator.h>
-#include <daw/gumbo_pp/gumbo_util.h>
+#include <daw/gumbo_pp.h>
 #include <daw/utf8.h>
 
 #include <gumbo.h>
@@ -49,18 +47,15 @@ namespace daw::ccae::details {
 namespace daw::ccae {
 	template<typename Callback>
 	static void
-	search_for_links_with_text( GumboNode *root_node,
+	search_for_links_with_text( GumboNode const *root_node,
 	                            std::vector<std::string> const &queries,
 	                            Callback onEach ) {
-		(void)daw::gumbo::find_all_oneach(
-		  daw::gumbo::gumbo_node_iterator_t( root_node ),
-		  daw::gumbo::gumbo_node_iterator_t( ),
-		  GUMBO_TAG_A,
+		using daw::gumbo::match;
+		daw::gumbo::find_all_if_oneach(
+		  root_node,
+		  { },
 		  [&]( GumboNode const &node ) {
 			  auto uri = daw::gumbo::node_attribute_value( node, "href" );
-			  if( not details::starts_with( uri, "http" ) ) {
-				  return;
-			  }
 			  auto title = daw::parser::trim( daw::gumbo::node_text( node ) );
 			  if( title.empty( ) ) {
 				  return;
@@ -73,6 +68,8 @@ namespace daw::ccae {
 					  return;
 				  }
 			  }
-		  } );
+		  },
+		  match::tag::types<GUMBO_TAG_A>,
+		  match::attribute::value::starts_with( "href", "http" ) );
 	}
 } // namespace daw::ccae
