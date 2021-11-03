@@ -16,7 +16,6 @@
 #define CROW_MAIN
 
 #include <crow.h>
-#include <future>
 #include <iterator>
 #include <unordered_map>
 #include <vector>

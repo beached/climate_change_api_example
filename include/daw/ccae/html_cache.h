@@ -15,6 +15,7 @@
 
 #include <daw/curl_wrapper.h>
 #include <daw/gumbo_pp/gumbo_handle.h>
+#include <daw/utf8/unchecked.h>
 
 #include <algorithm>
 #include <functional>
@@ -24,6 +25,31 @@
 #include <vector>
 
 namespace daw::ccae {
+	namespace ccae_details {
+		template<typename StringView>
+		std::string shrink_ws( StringView &&source ) {
+			std::string result{ };
+			result.reserve( source.size( ) );
+			auto first = daw::utf8::unchecked::iterator( std::data( source ) );
+			auto last = daw::utf8::unchecked::iterator( daw::data_end( source ) );
+			while( first != last ) {
+				if( daw::parser::is_unicode_whitespace( *first ) ) {
+					result += ' ';
+					++first;
+					while( first != last and
+					       daw::parser::is_unicode_whitespace( *first ) ) {
+						++first;
+					}
+				} else {
+					utf8::utf32to8( first,
+					                std::next( first ),
+					                std::back_inserter( result ) );
+					++first;
+				}
+			}
+			return result;
+		}
+	} // namespace ccae_details
 	struct html_cache_t {
 		using func_t = std::function<std::vector<Url>( )>;
 		using cache_t = daw::ccae::cached_value_t<std::vector<Url>, func_t>;
@@ -58,8 +84,9 @@ namespace daw::ccae {
 						      u.reserve( std::size( n.base ) + std::size( uri ) );
 						      u.append( std::data( n.base ), std::size( n.base ) );
 						      u.append( std::data( uri ), std::size( uri ) );
-						      std::string t( std::data( title ), std::size( title ) );
-						      r.push_back( Url{ DAW_MOVE( u ), DAW_MOVE( t ), n.name } );
+						      auto t = ccae_details::shrink_ws( title );
+						      auto tsv = daw::parser::trim( daw::string_view( t ) );
+						      r.push_back( Url{ DAW_MOVE( u ), tsv, n.name } );
 					      } );
 					    std::sort( std::begin( r ), std::end( r ) );
 					    r.erase( std::unique( std::begin( r ), std::end( r ) ),

@@ -51,25 +51,20 @@ namespace daw::ccae {
 	                            std::vector<std::string> const &queries,
 	                            Callback onEach ) {
 		using daw::gumbo::match;
-		daw::gumbo::find_all_if_oneach(
-		  root_node,
-		  { },
+		auto node_rng = gumbo::gumbo_node_iterator_t{ root_node };
+		auto const matcher =
+		  match::tag::types<GUMBO_TAG_A> and
+		  match::attribute::value::starts_with( "href", "http" ) and
+		  match::content_text::contains( queries );
+
+		daw::algorithm::for_each_if(
+		  node_rng.begin( ),
+		  node_rng.end( ),
+		  matcher,
 		  [&]( GumboNode const &node ) {
 			  auto uri = daw::gumbo::node_attribute_value( node, "href" );
-			  auto title = daw::parser::trim( daw::gumbo::node_text( node ) );
-			  if( title.empty( ) ) {
-				  return;
-			  }
-			  for( auto q : queries ) {
-				  if( nsc_and( not title.empty( ),
-				               daw::nsc_or( details::Contains( title, q ),
-				                            details::Contains( uri, q ) ) ) ) {
-					  (void)onEach( uri, title );
-					  return;
-				  }
-			  }
-		  },
-		  match::tag::types<GUMBO_TAG_A>,
-		  match::attribute::value::starts_with( "href", "http" ) );
+			  auto title = daw::gumbo::node_content_text( node );
+			  (void)onEach( uri, title );
+		  } );
 	}
 } // namespace daw::ccae
