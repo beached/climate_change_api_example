@@ -86,7 +86,9 @@ namespace daw::ccae {
 						      u.append( std::data( uri ), std::size( uri ) );
 						      auto t = ccae_details::shrink_ws( title );
 						      auto tsv = daw::parser::trim( daw::string_view( t ) );
-						      r.push_back( Url{ DAW_MOVE( u ), tsv, n.name } );
+						      r.push_back( Url{ DAW_MOVE( u ),
+						                        static_cast<std::string>( tsv ),
+						                        n.name } );
 					      } );
 					    std::sort( std::begin( r ), std::end( r ) );
 					    r.erase( std::unique( std::begin( r ), std::end( r ) ),

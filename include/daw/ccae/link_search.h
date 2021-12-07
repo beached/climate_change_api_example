@@ -50,10 +50,10 @@ namespace daw::ccae {
 	search_for_links_with_text( GumboNode const *root_node,
 	                            std::vector<std::string> const &queries,
 	                            Callback onEach ) {
-		using daw::gumbo::match;
+		namespace match = daw::gumbo::match;
 		auto node_rng = gumbo::gumbo_node_iterator_t{ root_node };
 		auto const matcher =
-		  match::tag::types<GUMBO_TAG_A> and
+		  match::tag::A and
 		  match::attribute::value::starts_with( "href", "http" ) and
 		  match::content_text::contains( queries );
 
